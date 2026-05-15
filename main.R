@@ -36,19 +36,38 @@ data <- data %>% mutate(across(where(is.numeric), scale))
 
 skim(data)
 
-corrplot(cor(raw_data), method="number", type="lower") 
+corrplot(cor(drop_na(raw_data)), method="number", type="lower") 
 
 ################################################################################
-#REGRESSION
+#REGRESSION WITH SAMPLING
 ################################################################################
+set.seed(1234)
 
-logmodel <- glm(num~., data = data, family = "binomial") 
+a <- 0.6
+i <- sample(nrow(data), a*nrow(data), replace = F)
 
-predicted <- predict.glm(logmodel,type="response")
+table(data[i,]$num)/nrow(data[i,])*100
+table(data[-i,]$num)/nrow(data[-i,])*100
 
+logmodel <- glm(num~., data = data, family = "binomial", subset = i) 
+
+
+predicted <- predict.glm(logmodel, newdata = test, type="response")
 predicted=(if_else(predicted>0.5,"1","0"))
-table(predicted, data$num)
-table(glm.pred2,Default$default) # confusion matrix
+test_error_rate <- mean(predicted != data[-i,]$num)
+cm <- table(Predicted = predicted, Actual = test$num)
+cm[1, 2] / sum(cm[, 2])
+
+
+predicted <- predict.glm(logmodel, newdata = test, type="response")
+predicted=(if_else(predicted>0.25,"1","0"))
+test_error_rate <- mean(predicted != data[-i,]$num)
+cm <- table(Predicted = predicted, Actual = test$num)
+cm[1, 2] / sum(cm[, 2])
+
+
+
+
 
 
 
