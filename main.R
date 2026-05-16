@@ -4,6 +4,9 @@ library(tidyr)
 library(corrplot)
 library(dplyr)
 library(ISLR2)
+library(boot) 
+library(pROC)
+library(MASS)
 
 ################################################################################
 #DATA CLEANING
@@ -12,21 +15,20 @@ library(ISLR2)
 raw_data <- fetch_ucirepo(id = 45)$data$original 
 data <- drop_na(raw_data)
 
-data$sex=as.factor(data$sex)
+data$sex <- as.factor(data$sex)
 data <- data %>% rename(is_male = sex)
 
-data$cp=as.factor(data$cp) #chestpain type (1-4)
+data$cp <- as.factor(data$cp) #chestpain type (1-4)
 
-data$fbs=as.factor(data$fbs) #fasting blood sugar higher than 120
+data$fbs <- as.factor(data$fbs) #fasting blood sugar higher than 120
 data <- data %>% rename(is_diabetic = fbs)
 
-data$restecg=as.factor(data$restecg)
+data$restecg <- as.factor(data$restecg)
 
-data$exang=as.factor(data$exang)
+data$exang <- as.factor(data$exang)
 
-data$slope=as.factor(data$slope)
-
-data$num=as.factor(if_else(data$num==0,"0","1"))
+data$slope <- as.factor(data$slope)
+data$num <- as.factor(if_else(data$num==0,"0","1"))
 
 data <- data %>% mutate(across(where(is.numeric), scale))
 
@@ -39,41 +41,45 @@ skim(data)
 corrplot(cor(drop_na(raw_data)), method="number", type="lower") 
 
 ################################################################################
-#REGRESSION WITH SAMPLING
+#REGRESSION MODEL 
 ################################################################################
+
+#Logistic regression
+logmodel <- glm(num~., data = data, family = "binomial") 
+
+#Defining the weighted cost function
+cost_function <- function(r, pi){
+  w1 <- 4
+  w0 <- 1
+  cut <- 1/(1+w1/w0)
+  c1 <- (r==1)&(pi < cut)
+  c0 <- (r==0)&(pi >= cut)
+  tc <- mean(w1*c1 + w0*c0)  
+  return(tc)
+}
+
+#5-fold Cross Validation
 set.seed(1234)
+t <- 20
+kcv_err <- numeric(t)
+for (i in 1:t){
+  kcv_err[i] <- cv.glm(data,logmodel,K=5, cost = cost_function)$delta[1]
+}
+(avg_kcv_err <- mean(kcv_err))
+(sd(kcv_err))
 
-a <- 0.6
-i <- sample(nrow(data), a*nrow(data), replace = F)
-
-table(data[i,]$num)/nrow(data[i,])*100
-table(data[-i,]$num)/nrow(data[-i,])*100
-
-logmodel <- glm(num~., data = data, family = "binomial", subset = i) 
-
-
-predicted <- predict.glm(logmodel, newdata = test, type="response")
-predicted=(if_else(predicted>0.5,"1","0"))
-test_error_rate <- mean(predicted != data[-i,]$num)
-cm <- table(Predicted = predicted, Actual = test$num)
-cm[1, 2] / sum(cm[, 2])
-
-
-predicted <- predict.glm(logmodel, newdata = test, type="response")
-predicted=(if_else(predicted>0.25,"1","0"))
-test_error_rate <- mean(predicted != data[-i,]$num)
-cm <- table(Predicted = predicted, Actual = test$num)
-cm[1, 2] / sum(cm[, 2])
+#AUC 
+predicted <- predict(logmodel, data, type = "response") 
+roc_object <- roc(data$num, predicted)
+cat("Area under the curve:", auc(roc_object))
+plot(roc_object, 
+     legacy.axes = TRUE,
+     col = "blue",      
+     lwd = 3,           
+     main = "Heart Disease Model ROC Curve")
 
 
-
-
-
-
-
-
-
-
-
-
+#LDA
+lda_model <- lda(num~.,data)
+lda_model
 
