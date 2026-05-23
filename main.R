@@ -7,18 +7,23 @@ library(ISLR2)
 library(boot) 
 library(pROC)
 library(MASS)
+library(tree)
 
 ################################################################################
 #DATA CLEANING
 ################################################################################
 
-raw_data <- fetch_ucirepo(id = 45)$data$original 
-data <- drop_na(raw_data)
+raw_data <- read.csv("./data/data.csv")
+colnames(raw_data) <- c("age", "sex", "cp", "trestbps", "chol", 
+                        "fbs", "restecg", "thalach", "exang", 
+                        "oldpeak", "slope", "ca", "thal", "num")
+
+data <- raw_data
 
 data$sex <- as.factor(data$sex)
 data <- data %>% rename(is_male = sex)
 
-data$cp <- as.factor(data$cp) #chestpain type (1-4)
+data$cp <- as.factor(data$cp) #chest pain type (1-4)
 
 data$fbs <- as.factor(data$fbs) #fasting blood sugar higher than 120
 data <- data %>% rename(is_diabetic = fbs)
@@ -30,6 +35,10 @@ data$exang <- as.factor(data$exang)
 data$slope <- as.factor(data$slope)
 data$num <- as.factor(if_else(data$num==0,"0","1"))
 
+data$thal <- factor(data$thal, levels = c("3.0", "6.0", "7.0"))
+data$ca <- factor(data$ca, levels = c("0.0", "1.0", "2.0", "3.0"))
+
+data <- drop_na(data)
 
 ################################################################################
 #EDA
@@ -37,7 +46,7 @@ data$num <- as.factor(if_else(data$num==0,"0","1"))
 
 skim(data)
 
-corrplot(cor(drop_na(raw_data)), method="number", type="lower") 
+corrplot(cor(raw_data[, sapply(raw_data, is.numeric)]), method="number", type="lower") 
 
 par(mfrow = c(2, 4))
 for (col in names(data)[sapply(data, is.numeric)]){
@@ -45,12 +54,18 @@ for (col in names(data)[sapply(data, is.numeric)]){
 }
 par(mfrow = c(1,1))
 
+
 ################################################################################
 #LOGISTIC REGRESSION MODEL 
 ################################################################################
 
+#SUBSET SELECTION
 logmodel <- glm(num~., data = data, family = "binomial") 
 
+step_model <- step(logmodel, direction = "backward")
+
+AIC(step_model)
+AIC(logmodel)
 
 #Weighted cost function
 cost_function <- function(r, pi){
@@ -69,7 +84,7 @@ set.seed(1234)
 t <- 20
 kcv_err <- numeric(t)
 for (i in 1:t){
-  kcv_err[i] <- cv.glm(data,logmodel,K=5, cost = cost_function)$delta[1]
+  kcv_err[i] <- cv.glm(data,step_model,K=5, cost = cost_function)$delta[1]
 }
 (avg_kcv_err <- mean(kcv_err))
 (sd(kcv_err))
@@ -77,9 +92,8 @@ for (i in 1:t){
 
 #In-sample AUC LOG MODEL
 
-predicted <- predict(logmodel, data, type = "response") 
+predicted <- predict(step_model, data, type = "response") 
 (roc_auc <- roc(data$num, predicted))
-(auc(roc_auc))
 
 
 #LOOCV AUC LOG MODEL
@@ -89,7 +103,8 @@ for (i in 1:nrow(data)){
   tr <- data[-i,]
   te <- data[i,]
   
-  model <- glm(num~., data = tr, family = "binomial")
+  model <- glm(num ~ is_male + cp + trestbps + thalach + exang + oldpeak + slope + 
+                 ca + thal, data = tr, family = "binomial")
   loocv_auc_vec[i] <- predict(model,newdata = te, type = "response")
 }
 roc_loocv <- roc(data$num, loocv_auc_vec)
@@ -115,8 +130,10 @@ legend("bottomright",
        lwd = 3)
 
 #Confusion Matrix
+log_weighted_classes <- as.factor(ifelse(predicted > 0.2, "1", "0"))
+
 round(prop.table(
-  table(Predicted = log_classes, Observed = data$num),
+  table(Predicted = log_weighted_classes, Observed = data$num),
   margin = 2) * 100,
   1)
 
@@ -131,10 +148,14 @@ lda_scores <- lda_predicted$x[,1]
 ldahist(lda_scores, g = data$num)
 
 lda_classes <- lda_predicted$class 
-table(Predicted = lda_predicted$class, Observed = data$num)
+
+round(prop.table(
+  table(Predicted = lda_predicted$class, Observed = data$num),
+  margin = 2) * 100,
+  1)
 
 
-#LOOCV AUC LCA
+#LOOCV AUC LDA
 loocv_lda_vec <- numeric(nrow(data))
 
 for (i in 1:nrow(data)){
@@ -149,7 +170,7 @@ roc_lda_loocv <- roc(data$num, loocv_lda_vec)
 (auc(roc_lda_loocv))
 
 
-#5-fold Cross Validation LCA
+#5-fold Cross Validation LDA
 
 set.seed(1234)
 t <- 20
@@ -178,8 +199,56 @@ for (i in 1:t){
 #Confusion Matrix with the same threshold 0.2
 
 lda_weighted_classes <- as.factor(ifelse(lda_predicted$posterior[, 2] > 0.2, 
-                                         "1", 
+                                         "1",
                                          "0"))
-conf_matrix_lda <- table(Predicted = lda_classes_thresh, Actual = data$num)
+
+conf_matrix_lda <- table(Predicted = lda_weighted_classes, Actual = data$num)
 round(prop.table(conf_matrix_lda, margin = 2) * 100, 1)
+
+
+################################################################################
+#TREE BASED METHODS
+################################################################################
+
+tree_model <- tree(num ~ ., data = data)
+cv_tree_model <- cv.tree(tree_model, FUN = prune.misclass)
+
+plot(tree_model, 
+     lwd = 1.5,           
+     type = "uniform",    
+     col = "black")   
+
+text(tree_model, 
+     cex = 1,          
+     col = "black",       
+     pretty = 0,          
+     font = 2)            
+
+par(mfrow = c(1, 2))
+plot(cv_tree_model$size,cv_tree_model$dev,type="b",lwd=2,col="blue",
+     xlab="Number of terminal nodes", ylab="Deviance" )
+plot(cv_tree_model$k,cv_tree_model$dev,type="b",lwd=2,col="blue",
+     xlab="Cost-complexity", ylab="Deviance" )
+par(mfrow = c(1, 1))
+
+size_pruned_tree <- cv_tree_model$size[which.min(cv_tree_model$dev)]
+
+pruned_tree <- prune.misclass(tree_model,best=size_pruned_tree)
+
+plot(pruned_tree, lwd = 1.5, type = "uniform", col = "black")
+text(pruned_tree, cex = 1, col = "black", pretty = 0, font = 2)
+title(main = "Pruned Decision Tree - Heart Disease")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
