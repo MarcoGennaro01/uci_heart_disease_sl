@@ -8,6 +8,7 @@ library(boot)
 library(pROC)
 library(MASS)
 library(tree)
+library(randomForest)
 
 ################################################################################
 #DATA CLEANING
@@ -103,8 +104,8 @@ for (i in 1:nrow(data)){
   tr <- data[-i,]
   te <- data[i,]
   
-  model <- glm(num ~ is_male + cp + trestbps + thalach + exang + oldpeak + slope + 
-                 ca + thal, data = tr, family = "binomial")
+  model <- glm(num ~ is_male + cp + trestbps + exang + oldpeak + slope + 
+                 ca + thal + thalach, data = tr, family = "binomial")
   loocv_auc_vec[i] <- predict(model,newdata = te, type = "response")
 }
 roc_loocv <- roc(data$num, loocv_auc_vec)
@@ -231,6 +232,7 @@ plot(cv_tree_model$k,cv_tree_model$dev,type="b",lwd=2,col="blue",
      xlab="Cost-complexity", ylab="Deviance" )
 par(mfrow = c(1, 1))
 
+#Pruning
 size_pruned_tree <- cv_tree_model$size[which.min(cv_tree_model$dev)]
 
 pruned_tree <- prune.misclass(tree_model,best=size_pruned_tree)
@@ -239,16 +241,111 @@ plot(pruned_tree, lwd = 1.5, type = "uniform", col = "black")
 text(pruned_tree, cex = 1, col = "black", pretty = 0, font = 2)
 title(main = "Pruned Decision Tree - Heart Disease")
 
+#LOOCV AUC PRUNED TREE
+loocv_tree_vec <- numeric(nrow(data))
+
+for (i in 1:nrow(data)){
+  tr <- data[-i, ]
+  te <- data[i, ]
+  
+  model <- tree(num ~ ., data = tr)
+  pruned <- prune.misclass(model, best = size_pruned_tree)
+  loocv_tree_vec[i] <- predict(pruned, newdata = te, type = "vector")[, 2]
+}
+
+roc_tree_loocv <- roc(data$num, loocv_tree_vec)
+(auc(roc_tree_loocv))
 
 
+#5-fold Cross Validation PRUNED TREE
+set.seed(1234)
+t <- 20
+kcv_tree_err <- numeric(t)
 
+for (i in 1:t){
+  k <- 5
+  folds <- sample(rep(1:k, length.out = nrow(data)))
+  fold_costs <- numeric(k)
+  
+  for (j in 1:k){
+    tr <- data[folds != j, ]
+    te <- data[folds == j, ]
+    
+    model <- tree(num ~ ., data = tr)
+    pruned <- prune.misclass(model, best = size_pruned_tree)
+    preds <- predict(pruned, newdata = te, type = "vector")[, 2]
+    fold_costs[j] <- cost_function(as.numeric(as.character(te$num)), preds)
+  }
+  kcv_tree_err[i] <- mean(fold_costs)
+}
 
+(avg_kcv_tree_err <- mean(kcv_tree_err))
+(sd(kcv_tree_err))
 
+################################################################################
+#RANDOM FOREST
+################################################################################
 
+set.seed(1234)
+(rf_model <- randomForest(num ~ ., 
+                          mtry = ncol(data)-1,
+                          data = data,
+                          importance = TRUE))
 
+#LOOCV AUC RANDOM FOREST
+loocv_rf_vec <- numeric(nrow(data))
 
+for (i in 1:nrow(data)){
+  tr <- data[-i, ]
+  te <- data[i, ]
+  
+  model <- randomForest(num ~ ., data = tr, mtry = ncol(data)-1)
+  loocv_rf_vec[i] <- predict(model, newdata = te, type = "prob")[, 2]
+}
 
+roc_rf_loocv <- roc(data$num, loocv_rf_vec)
+(auc(roc_rf_loocv))
 
+#5-fold Cross Validation RANDOM FOREST
+set.seed(1234)
+t <- 20
+kcv_rf_err <- numeric(t)
 
+for (i in 1:t){
+  k <- 5
+  folds <- sample(rep(1:k, length.out = nrow(data)))
+  fold_costs <- numeric(k)
+  
+  for (j in 1:k){
+    tr <- data[folds != j, ]
+    te <- data[folds == j, ]
+    
+    model <- randomForest(num ~ ., data = tr, mtry = ncol(data)-1)
+    preds <- predict(model, newdata = te, type = "prob")[, 2]
+    fold_costs[j] <- cost_function(as.numeric(as.character(te$num)), preds)
+  }
+  kcv_rf_err[i] <- mean(fold_costs)
+}
 
+(avg_kcv_rf_err <- mean(kcv_rf_err))
+(sd(kcv_rf_err))
 
+varImpPlot(rf_model, col="steelblue", pch=25, main="Importance Plot")
+
+################################################################################
+#FINAL MODEL COMPARISON
+################################################################################
+
+comparison_table <- data.frame(
+  Model = c("Step Model", "LDA", "Pruned Tree", "Random Forest"),
+  LOOCV_AUC = c(round(auc(roc_loocv), 3),
+                round(auc(roc_lda_loocv), 3),
+                round(auc(roc_tree_loocv), 3),
+                round(auc(roc_rf_loocv), 3)),
+  CV_Error_Mean = round(c(avg_kcv_err, avg_kcv_lda_err, 
+                          avg_kcv_tree_err, avg_kcv_rf_err), 3),
+  CV_Error_SD = round(c(sd(kcv_err), sd(kcv_lda_err), 
+                        sd(kcv_tree_err), sd(kcv_rf_err)), 3)
+)
+
+print(comparison_table)
